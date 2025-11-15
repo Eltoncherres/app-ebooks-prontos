@@ -1,7 +1,7 @@
 "use client";
 
-import { useState } from "react";
-import { BookOpen, Sparkles, ShoppingCart, Plus, Search, Filter, CreditCard, Check } from "lucide-react";
+import { useState, useMemo } from "react";
+import { BookOpen, Sparkles, ShoppingCart, Plus, Search, Filter, CreditCard, Check, ChevronLeft, ChevronRight, Loader2 } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Card, CardContent, CardDescription, CardFooter, CardHeader, CardTitle } from "@/components/ui/card";
@@ -11,11 +11,15 @@ import { Label } from "@/components/ui/label";
 import { Textarea } from "@/components/ui/textarea";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 import { EBOOKS_DATA, CATEGORIES, type Ebook } from "@/lib/ebooks-data";
+import { createKirvanoCheckout } from "@/lib/kirvano";
+import { toast } from "sonner";
 
 type User = {
   hasAccess: boolean;
   purchasedEbooks: number[];
 };
+
+const ITEMS_PER_PAGE = 24;
 
 export default function Home() {
   const [user, setUser] = useState<User>({ hasAccess: false, purchasedEbooks: [] });
@@ -25,44 +29,131 @@ export default function Home() {
   const [showAccessDialog, setShowAccessDialog] = useState(false);
   const [showCreateDialog, setShowCreateDialog] = useState(false);
   const [cart, setCart] = useState<number[]>([]);
+  const [currentPage, setCurrentPage] = useState(1);
+  const [isProcessingPayment, setIsProcessingPayment] = useState(false);
+  const [customerEmail, setCustomerEmail] = useState("");
+  const [customerName, setCustomerName] = useState("");
 
   // Filtrar e-books
-  const filteredEbooks = ebooks.filter((ebook) => {
-    const matchesSearch = ebook.title.toLowerCase().includes(searchTerm.toLowerCase()) ||
-                         ebook.author.toLowerCase().includes(searchTerm.toLowerCase());
-    const matchesCategory = selectedCategory === "all" || ebook.category === selectedCategory;
-    return matchesSearch && matchesCategory;
-  });
+  const filteredEbooks = useMemo(() => {
+    return ebooks.filter((ebook) => {
+      const matchesSearch = ebook.title.toLowerCase().includes(searchTerm.toLowerCase()) ||
+                           ebook.author.toLowerCase().includes(searchTerm.toLowerCase());
+      const matchesCategory = selectedCategory === "all" || ebook.category === selectedCategory;
+      return matchesSearch && matchesCategory;
+    });
+  }, [ebooks, searchTerm, selectedCategory]);
+
+  // Paginação
+  const totalPages = Math.ceil(filteredEbooks.length / ITEMS_PER_PAGE);
+  const startIndex = (currentPage - 1) * ITEMS_PER_PAGE;
+  const endIndex = startIndex + ITEMS_PER_PAGE;
+  const currentEbooks = filteredEbooks.slice(startIndex, endIndex);
+
+  // Reset página quando filtros mudam
+  const handleSearchChange = (value: string) => {
+    setSearchTerm(value);
+    setCurrentPage(1);
+  };
+
+  const handleCategoryChange = (value: string) => {
+    setSelectedCategory(value);
+    setCurrentPage(1);
+  };
 
   // Categorias únicas
   const categories = ["all", ...CATEGORIES];
 
-  // Comprar acesso
-  const handleBuyAccess = () => {
-    setUser({ ...user, hasAccess: true });
-    setShowAccessDialog(false);
+  // Comprar acesso via Kirvano
+  const handleBuyAccess = async () => {
+    if (!customerEmail || !customerName) {
+      toast.error("Preencha seu nome e email para continuar");
+      return;
+    }
+
+    setIsProcessingPayment(true);
+
+    try {
+      const checkout = await createKirvanoCheckout({
+        amount: 19.99,
+        description: "Acesso à Plataforma e-booksjá",
+        customerEmail,
+        customerName,
+        items: [
+          {
+            name: "Acesso Vitalício à Plataforma",
+            quantity: 1,
+            price: 19.99,
+          },
+        ],
+        metadata: {
+          type: "platform_access",
+          userId: "temp_user_id", // Substituir por ID real do usuário
+        },
+      });
+
+      // Redirecionar para página de pagamento Kirvano
+      window.location.href = checkout.checkoutUrl;
+    } catch (error) {
+      console.error("Erro ao processar pagamento:", error);
+      toast.error("Erro ao processar pagamento. Tente novamente.");
+    } finally {
+      setIsProcessingPayment(false);
+    }
   };
 
   // Adicionar ao carrinho
   const addToCart = (ebookId: number) => {
     if (!cart.includes(ebookId)) {
       setCart([...cart, ebookId]);
+      toast.success("E-book adicionado ao carrinho!");
     }
   };
 
   // Remover do carrinho
   const removeFromCart = (ebookId: number) => {
     setCart(cart.filter((id) => id !== ebookId));
+    toast.success("E-book removido do carrinho");
   };
 
-  // Finalizar compra
-  const handleCheckout = () => {
-    const newPurchased = [...user.purchasedEbooks, ...cart];
-    setUser({ ...user, purchasedEbooks: newPurchased });
-    setEbooks(ebooks.map((ebook) => 
-      cart.includes(ebook.id) ? { ...ebook, purchased: true } : ebook
-    ));
-    setCart([]);
+  // Finalizar compra via Kirvano
+  const handleCheckout = async () => {
+    if (!customerEmail || !customerName) {
+      toast.error("Preencha seu nome e email para continuar");
+      return;
+    }
+
+    setIsProcessingPayment(true);
+
+    try {
+      const cartEbooks = ebooks.filter((ebook) => cart.includes(ebook.id));
+      const totalAmount = cart.length * 4.99;
+
+      const checkout = await createKirvanoCheckout({
+        amount: totalAmount,
+        description: `Compra de ${cart.length} e-book(s)`,
+        customerEmail,
+        customerName,
+        items: cartEbooks.map((ebook) => ({
+          name: ebook.title,
+          quantity: 1,
+          price: 4.99,
+        })),
+        metadata: {
+          type: "ebooks_purchase",
+          ebookIds: cart,
+          userId: "temp_user_id", // Substituir por ID real do usuário
+        },
+      });
+
+      // Redirecionar para página de pagamento Kirvano
+      window.location.href = checkout.checkoutUrl;
+    } catch (error) {
+      console.error("Erro ao processar pagamento:", error);
+      toast.error("Erro ao processar pagamento. Tente novamente.");
+    } finally {
+      setIsProcessingPayment(false);
+    }
   };
 
   // Criar novo e-book
@@ -82,6 +173,7 @@ export default function Home() {
     };
     setEbooks([...ebooks, newEbook]);
     setShowCreateDialog(false);
+    toast.success("E-book criado com sucesso!");
   };
 
   const totalCart = cart.length * 4.99;
@@ -128,26 +220,63 @@ export default function Home() {
                       </DialogDescription>
                     </DialogHeader>
                     <div className="space-y-4 py-4">
-                      <div className="flex items-center gap-2">
-                        <Check className="w-5 h-5 text-green-600" />
-                        <span>Acesso vitalício à plataforma</span>
+                      <div className="space-y-2">
+                        <Label htmlFor="access-name">Nome Completo</Label>
+                        <Input
+                          id="access-name"
+                          placeholder="Seu nome"
+                          value={customerName}
+                          onChange={(e) => setCustomerName(e.target.value)}
+                          required
+                        />
                       </div>
-                      <div className="flex items-center gap-2">
-                        <Check className="w-5 h-5 text-green-600" />
-                        <span>{ebooks.length} e-books disponíveis</span>
+                      <div className="space-y-2">
+                        <Label htmlFor="access-email">Email</Label>
+                        <Input
+                          id="access-email"
+                          type="email"
+                          placeholder="seu@email.com"
+                          value={customerEmail}
+                          onChange={(e) => setCustomerEmail(e.target.value)}
+                          required
+                        />
                       </div>
-                      <div className="flex items-center gap-2">
-                        <Check className="w-5 h-5 text-green-600" />
-                        <span>E-books por apenas R$ 4,99</span>
-                      </div>
-                      <div className="flex items-center gap-2">
-                        <Check className="w-5 h-5 text-green-600" />
-                        <span>Crie seus próprios e-books</span>
+                      <div className="space-y-2 pt-4 border-t">
+                        <div className="flex items-center gap-2">
+                          <Check className="w-5 h-5 text-green-600" />
+                          <span>Acesso vitalício à plataforma</span>
+                        </div>
+                        <div className="flex items-center gap-2">
+                          <Check className="w-5 h-5 text-green-600" />
+                          <span>{ebooks.length} e-books disponíveis</span>
+                        </div>
+                        <div className="flex items-center gap-2">
+                          <Check className="w-5 h-5 text-green-600" />
+                          <span>E-books por apenas R$ 4,99</span>
+                        </div>
+                        <div className="flex items-center gap-2">
+                          <Check className="w-5 h-5 text-green-600" />
+                          <span>Crie seus próprios e-books</span>
+                        </div>
                       </div>
                     </div>
                     <DialogFooter>
-                      <Button onClick={handleBuyAccess} className="w-full bg-gradient-to-r from-purple-600 to-blue-600 hover:from-purple-700 hover:to-blue-700">
-                        Pagar R$ 19,99 e Começar
+                      <Button 
+                        onClick={handleBuyAccess} 
+                        disabled={isProcessingPayment || !customerEmail || !customerName}
+                        className="w-full bg-gradient-to-r from-purple-600 to-blue-600 hover:from-purple-700 hover:to-blue-700"
+                      >
+                        {isProcessingPayment ? (
+                          <>
+                            <Loader2 className="w-4 h-4 mr-2 animate-spin" />
+                            Processando...
+                          </>
+                        ) : (
+                          <>
+                            <CreditCard className="w-4 h-4 mr-2" />
+                            Pagar R$ 19,99 via Kirvano
+                          </>
+                        )}
                       </Button>
                     </DialogFooter>
                   </DialogContent>
@@ -237,25 +366,52 @@ export default function Home() {
                       </DialogHeader>
                       {cart.length > 0 && (
                         <div className="space-y-4">
-                          {cart.map((ebookId) => {
-                            const ebook = ebooks.find((e) => e.id === ebookId);
-                            if (!ebook) return null;
-                            return (
-                              <div key={ebookId} className="flex items-center justify-between p-3 bg-gray-50 rounded-lg">
-                                <div>
-                                  <p className="font-medium">{ebook.title}</p>
-                                  <p className="text-sm text-gray-600">R$ 4,99</p>
+                          <div className="space-y-2 max-h-64 overflow-y-auto">
+                            {cart.map((ebookId) => {
+                              const ebook = ebooks.find((e) => e.id === ebookId);
+                              if (!ebook) return null;
+                              return (
+                                <div key={ebookId} className="flex items-center justify-between p-3 bg-gray-50 rounded-lg">
+                                  <div>
+                                    <p className="font-medium">{ebook.title}</p>
+                                    <p className="text-sm text-gray-600">R$ 4,99</p>
+                                  </div>
+                                  <Button 
+                                    variant="ghost" 
+                                    size="sm"
+                                    onClick={() => removeFromCart(ebookId)}
+                                  >
+                                    Remover
+                                  </Button>
                                 </div>
-                                <Button 
-                                  variant="ghost" 
-                                  size="sm"
-                                  onClick={() => removeFromCart(ebookId)}
-                                >
-                                  Remover
-                                </Button>
-                              </div>
-                            );
-                          })}
+                              );
+                            })}
+                          </div>
+                          
+                          <div className="space-y-3 border-t pt-4">
+                            <div className="space-y-2">
+                              <Label htmlFor="cart-name">Nome Completo</Label>
+                              <Input
+                                id="cart-name"
+                                placeholder="Seu nome"
+                                value={customerName}
+                                onChange={(e) => setCustomerName(e.target.value)}
+                                required
+                              />
+                            </div>
+                            <div className="space-y-2">
+                              <Label htmlFor="cart-email">Email</Label>
+                              <Input
+                                id="cart-email"
+                                type="email"
+                                placeholder="seu@email.com"
+                                value={customerEmail}
+                                onChange={(e) => setCustomerEmail(e.target.value)}
+                                required
+                              />
+                            </div>
+                          </div>
+
                           <div className="border-t pt-4">
                             <div className="flex justify-between items-center mb-4">
                               <span className="font-bold text-lg">Total:</span>
@@ -265,9 +421,20 @@ export default function Home() {
                             </div>
                             <Button 
                               onClick={handleCheckout}
+                              disabled={isProcessingPayment || !customerEmail || !customerName}
                               className="w-full bg-gradient-to-r from-green-600 to-emerald-600 hover:from-green-700 hover:to-emerald-700"
                             >
-                              Finalizar Compra
+                              {isProcessingPayment ? (
+                                <>
+                                  <Loader2 className="w-4 h-4 mr-2 animate-spin" />
+                                  Processando...
+                                </>
+                              ) : (
+                                <>
+                                  <CreditCard className="w-4 h-4 mr-2" />
+                                  Pagar via Kirvano
+                                </>
+                              )}
                             </Button>
                           </div>
                         </div>
@@ -319,6 +486,9 @@ export default function Home() {
               <Sparkles className="w-5 h-5 mr-2" />
               Começar Agora - R$ 19,99
             </Button>
+            <p className="text-sm text-gray-500">
+              💳 Pagamento seguro processado pela Kirvano
+            </p>
           </div>
         </section>
       )}
@@ -333,11 +503,11 @@ export default function Home() {
                 type="text"
                 placeholder="Buscar e-books..."
                 value={searchTerm}
-                onChange={(e) => setSearchTerm(e.target.value)}
+                onChange={(e) => handleSearchChange(e.target.value)}
                 className="pl-10"
               />
             </div>
-            <Select value={selectedCategory} onValueChange={setSelectedCategory}>
+            <Select value={selectedCategory} onValueChange={handleCategoryChange}>
               <SelectTrigger className="w-full sm:w-[200px]">
                 <Filter className="w-4 h-4 mr-2" />
                 <SelectValue placeholder="Categoria" />
@@ -351,22 +521,48 @@ export default function Home() {
               </SelectContent>
             </Select>
           </div>
-          <p className="text-center text-gray-600 mb-4">
-            Mostrando {filteredEbooks.length} de {ebooks.length} e-books
-          </p>
+          <div className="flex items-center justify-between mb-4">
+            <p className="text-gray-600">
+              Mostrando {startIndex + 1}-{Math.min(endIndex, filteredEbooks.length)} de {filteredEbooks.length} e-books
+            </p>
+            {totalPages > 1 && (
+              <div className="flex items-center gap-2">
+                <Button
+                  variant="outline"
+                  size="sm"
+                  onClick={() => setCurrentPage(prev => Math.max(1, prev - 1))}
+                  disabled={currentPage === 1}
+                >
+                  <ChevronLeft className="w-4 h-4" />
+                </Button>
+                <span className="text-sm text-gray-600">
+                  Página {currentPage} de {totalPages}
+                </span>
+                <Button
+                  variant="outline"
+                  size="sm"
+                  onClick={() => setCurrentPage(prev => Math.min(totalPages, prev + 1))}
+                  disabled={currentPage === totalPages}
+                >
+                  <ChevronRight className="w-4 h-4" />
+                </Button>
+              </div>
+            )}
+          </div>
         </section>
       )}
 
       {/* Grid de E-books */}
       <section className="container mx-auto px-4 pb-16">
         <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 xl:grid-cols-4 gap-6">
-          {filteredEbooks.map((ebook) => (
+          {currentEbooks.map((ebook) => (
             <Card key={ebook.id} className="overflow-hidden hover:shadow-2xl transition-all duration-300 hover:-translate-y-1">
               <div className="relative h-64 overflow-hidden bg-gray-100">
                 <img 
                   src={ebook.cover} 
                   alt={ebook.title}
                   className="w-full h-full object-cover"
+                  loading="lazy"
                 />
                 <Badge className="absolute top-3 right-3 bg-purple-600 text-white">
                   {ebook.category}
@@ -432,6 +628,31 @@ export default function Home() {
             <p className="text-xl text-gray-500">Nenhum e-book encontrado</p>
           </div>
         )}
+
+        {/* Paginação inferior */}
+        {totalPages > 1 && user.hasAccess && (
+          <div className="flex justify-center items-center gap-2 mt-8">
+            <Button
+              variant="outline"
+              onClick={() => setCurrentPage(prev => Math.max(1, prev - 1))}
+              disabled={currentPage === 1}
+            >
+              <ChevronLeft className="w-4 h-4 mr-2" />
+              Anterior
+            </Button>
+            <span className="text-sm text-gray-600 px-4">
+              Página {currentPage} de {totalPages}
+            </span>
+            <Button
+              variant="outline"
+              onClick={() => setCurrentPage(prev => Math.min(totalPages, prev + 1))}
+              disabled={currentPage === totalPages}
+            >
+              Próxima
+              <ChevronRight className="w-4 h-4 ml-2" />
+            </Button>
+          </div>
+        )}
       </section>
 
       {/* Footer */}
@@ -444,8 +665,11 @@ export default function Home() {
           <p className="text-gray-400 mb-2">
             Sua plataforma completa para criação e venda de e-books
           </p>
-          <p className="text-sm text-gray-500">
+          <p className="text-sm text-gray-500 mb-2">
             {ebooks.length} e-books disponíveis em 6 categorias
+          </p>
+          <p className="text-xs text-gray-600">
+            💳 Pagamentos processados com segurança pela Kirvano
           </p>
         </div>
       </footer>
